@@ -1,0 +1,136 @@
+$SubscriptionID = ''
+$DaysNearExpiration = '7'
+$VaultName = ''
+
+$connection = Get-AutomationConnection -Name AzureRunAsConnection
+
+$connectionName = "AzureRunAsConnection"
+try
+{
+    # Get the connection "AzureRunAsConnection "
+    $servicePrincipalConnection=Get-AutomationConnection -Name $connectionName         
+
+    "Logging in to Azure..."
+    Add-AzureRmAccount `
+        -ServicePrincipal `
+        -TenantId $servicePrincipalConnection.TenantId `
+        -ApplicationId $servicePrincipalConnection.ApplicationId `
+        -CertificateThumbprint $servicePrincipalConnection.CertificateThumbprint 
+}
+catch {
+    if (!$servicePrincipalConnection)
+    {
+        $ErrorMessage = "Connection $connectionName not found."
+        throw $ErrorMessage
+    } else{
+        Write-Error -Message $_.Exception
+        throw $_.Exception
+    }
+}
+
+Select-AzureRmSubscription -SubscriptionId $SubscriptionID 
+ 
+$ExpiredSecrets = @()
+$NearExpirationSecrets = @()
+
+if ($VaultName) {
+    $KeyVaults = Get-AzureKeyVaultKey -VaultName *******  
+}
+else {
+    $KeyVaults = Get-AzureKeyVaultKey
+}
+$ExpirationDate = (Get-Date (Get-Date).AddDays($DaysNearExpiration) -Format yyyyMMdd)
+#$CurrentDate = (Get-Date -Format yyyyMMdd)
+$Date = Get-Date (Get-Date).AddDays(7) -Format yyyyMMdd 
+$CurrentDate = Get-Date -Format yyyyMMdd
+
+
+ 
+foreach ($KeyVault in $KeyVaults) {
+    $SecretsArray = Get-AzureKeyVaultSecret -VaultName $KeyVault.VaultName
+    foreach ($secret in $SecretsArray) {
+        if ($secret.Expires) {
+            $secretExpiration = Get-date $secret.Expires -Format yyyyMMdd
+            if($secretExpiration -lt $Date -and $secretExpiration -gt $CurrentDate) 
+            {
+                 $NearExpirationSecrets += New-Object PSObject -Property @{
+                        Name           = $secret.Name;
+                        Category       = 'SecretNearExpiration';
+                        KeyVaultName   = $KeyVault.VaultName;
+                        ExpirationDate = $secret.Expires;
+                    }
+            }
+           
+        }
+    }
+         
+}
+$NearExpirationUniqueSecrets = @();
+$NearExpirationUniqueSecrets =$NearExpirationSecrets | Select-Object * -Unique
+
+#Write-Output "Total number of expired secrets: $($NearExpirationSecrets.Count)"
+#Write-Output "Total number of secrets near expiration: $($NearExpirationUniqueSecrets.Count)"
+
+$ExpiredSecretStr="Total number of Near expiry secrets: $($NearExpirationUniqueSecrets.Count)"
+$ExpiredSecretStr+="<table cellpadding='5' border='1'>";
+$ExpiredSecretStr+="<tr><td>Name &nbsp</td><td>Status &nbsp</td><td>KeyVault</td><td>Expiration Date</td></tr>";
+ foreach ($NearExpirationSecret in $NearExpirationUniqueSecrets) {
+   $ExpiredSecretStr+="<tr>";
+   $ExpiredSecretStr += "<td>"+$NearExpirationSecret.Name+"</td>";
+    $ExpiredSecretStr += "<td>"+$NearExpirationSecret.Category+"</td>";
+    $ExpiredSecretStr += "<td>"+$NearExpirationSecret.KeyVaultName+"</td>";
+    $ExpiredSecretStr += "<td>"+$NearExpirationSecret.ExpirationDate.ToString('M-d-yyyy')+"</td>";
+     $ExpiredSecretStr+="</tr>"; 
+ }
+$ExpiredSecretStr+="</table>"
+
+Write-Output $ExpiredSecretStr
+
+# Hardcode the API key of sendgrid. We need it in the header of the API call
+$SENDGRID_API_KEY = "************"
+
+# Create the headers for the API call
+$headers = New-Object "System.Collections.Generic.Dictionary[[String],[String]]"
+$headers.Add("Authorization", "Bearer " + $SENDGRID_API_KEY)
+$headers.Add("Content-Type", "application/json")
+ 
+# Parameters for sending the email
+$fromEmailAddress = ""
+$destEmailAddress = ""
+$subject = "Secret key-vault reminder notification !!!"
+#$content = Write-Output ([string]::Format(“Total number of expired secrets:{0}`n{1}”,$($ExpiredSecrets.Count),$ExpiredSecretStr))
+$content=$ExpiredSecretStr
+
+# Create a JSON message with the parameters from above
+
+$body = @{
+personalizations = @(
+    @{
+        to = @(
+                @{
+                    email = " "
+                },
+                 @{
+                    email = ""
+                },
+                 @{
+                    email = ""
+                }
+        )
+    }
+)
+from = @{
+    email = $fromEmailAddress
+}
+subject = $subject
+content = @(
+    @{
+        type = "text/html"
+        value = $content
+    }
+)
+}
+
+$bodyJson = $body | ConvertTo-Json -Depth 4
+$response = Invoke-RestMethod -Uri https://api.sendgrid.com/v3/mail/send -Method Post -Headers $headers -Body $bodyJson 
+Write-Output "End"
